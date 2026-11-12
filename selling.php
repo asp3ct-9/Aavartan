@@ -1,5 +1,6 @@
 <?php
 session_start();
+require_once __DIR__ . DIRECTORY_SEPARATOR . "image_classifier.php";
 
 /*
 |--------------------------------------------------------------------------
@@ -20,6 +21,10 @@ $dbName = "aavartan_db";
 
 $successMessage = "";
 $errorMessage = "";
+
+if (empty($_SESSION["listing_image_csrf"])) {
+    $_SESSION["listing_image_csrf"] = bin2hex(random_bytes(32));
+}
 
 /* ---------- Require login ---------- */
 if (!isset($_SESSION["user_id"])) {
@@ -97,6 +102,18 @@ $displayYear = htmlspecialchars($user["year"] ?? "", ENT_QUOTES, "UTF-8");
 /* ---------- Helpers ---------- */
 function clean_text($value) {
     return trim((string)$value);
+}
+
+function listing_form_value($name, $default = "") {
+    return htmlspecialchars((string)($_POST[$name] ?? $default), ENT_QUOTES, "UTF-8");
+}
+
+function listing_form_selected($name, $value, $default = "") {
+    return (string)($_POST[$name] ?? $default) === $value ? "selected" : "";
+}
+
+function listing_form_checked($name, $value, $default = "") {
+    return (string)($_POST[$name] ?? $default) === $value ? "checked" : "";
 }
 
 function redirect_after_success() {
@@ -206,6 +223,24 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
                 if (!isset($allowedMimes[$mime])) {
                     $errorMessage = "Only JPG, PNG and WEBP images are allowed.";
+                } elseif (!@getimagesize($file["tmp_name"])) {
+                    $errorMessage = "This file is not a valid image. Please upload a clear JPG, PNG or WEBP photo of the hardware component.";
+                } else {
+                    $submittedVerificationToken = (string)($_POST["image_verification_token"] ?? "");
+                    $uploadedImageHash = hash_file("sha256", $file["tmp_name"]);
+                    $verifications = $_SESSION["listing_image_verifications"] ?? [];
+                    $verification = is_array($verifications) ? ($verifications[$submittedVerificationToken] ?? null) : null;
+
+                    if (
+                        !is_array($verification) ||
+                        $submittedVerificationToken === "" ||
+                        !hash_equals((string)($verification["hash"] ?? ""), (string)$uploadedImageHash) ||
+                        (int)($verification["created_at"] ?? 0) < time() - 900
+                    ) {
+                        $errorMessage = "Please wait for the image check to finish, then publish your listing.";
+                    } else {
+                        unset($_SESSION["listing_image_verifications"][$submittedVerificationToken]);
+                    }
                 }
             }
         }
@@ -838,6 +873,10 @@ textarea{height:125px;resize:vertical}
 .server-message{margin-bottom:18px;padding:13px 15px;border-radius:11px;font-size:12px;font-weight:700}
 .success-message{background:#ecfdf5;border:1px solid #bbf7d0;color:#166534}
 .error-message{background:#fef2f2;border:1px solid #fecaca;color:#b91c1c}
+.image-check-status{display:none;margin-top:10px;padding:11px 13px;border-radius:10px;font-size:12px;font-weight:700}
+.image-check-status.checking{display:block;background:#eff6ff;border:1px solid #bfdbfe;color:#1d4ed8}
+.image-check-status.success{display:block;background:#ecfdf5;border:1px solid #bbf7d0;color:#166534}
+.image-check-status.error{display:block;background:#fef2f2;border:1px solid #fecaca;color:#b91c1c}
 
 
 @media(max-width:1000px){
@@ -1040,13 +1079,16 @@ textarea{height:125px;resize:vertical}
 
         </div>
 
-        <input
+            <input
             type="file"
             id="imageInput"
             name="image"
             accept="image/png,image/jpeg,image/webp"
             required
         >
+        <input type="hidden" id="imageVerificationToken" name="image_verification_token" value="">
+        <input type="hidden" id="imageCheckCsrf" value="<?php echo htmlspecialchars($_SESSION["listing_image_csrf"], ENT_QUOTES, "UTF-8"); ?>">
+        <div id="imageCheckStatus" class="image-check-status" role="status" aria-live="polite"></div>
 
     </div>
 
@@ -1066,9 +1108,10 @@ textarea{height:125px;resize:vertical}
 
             <input
                 type="text"
-                id="materialName" name="material_name"
+                id="materialName" name="material_name" required
                 placeholder="e.g. Arduino UNO R3"
                 oninput="updatePreview()"
+                value="<?php echo listing_form_value("material_name"); ?>"
             >
 
         </div>
@@ -1082,21 +1125,21 @@ textarea{height:125px;resize:vertical}
                 Category <span>*</span>
             </label>
 
-            <select id="category" name="category" onchange="updatePreview()">
+            <select id="category" name="category" required onchange="updatePreview()">
 
                 <option value="">
                     Select Category
                 </option>
 
-                <option>Arduino</option>
-                <option>Sensors</option>
-                <option>Electronics</option>
-                <option>Mechanical</option>
-                <option>Robotics</option>
-                <option>IoT</option>
-                <option>Cables &amp; Wires</option>
-                <option>Tools</option>
-                <option>Other</option>
+                <option <?php echo listing_form_selected("category", "Arduino"); ?>>Arduino</option>
+                <option <?php echo listing_form_selected("category", "Sensors"); ?>>Sensors</option>
+                <option <?php echo listing_form_selected("category", "Electronics"); ?>>Electronics</option>
+                <option <?php echo listing_form_selected("category", "Mechanical"); ?>>Mechanical</option>
+                <option <?php echo listing_form_selected("category", "Robotics"); ?>>Robotics</option>
+                <option <?php echo listing_form_selected("category", "IoT"); ?>>IoT</option>
+                <option <?php echo listing_form_selected("category", "Cables & Wires"); ?>>Cables &amp; Wires</option>
+                <option <?php echo listing_form_selected("category", "Tools"); ?>>Tools</option>
+                <option <?php echo listing_form_selected("category", "Other"); ?>>Other</option>
 
             </select>
 
@@ -1119,7 +1162,8 @@ textarea{height:125px;resize:vertical}
                         name="condition"
                         id="new"
                         value="Like New"
-                        checked
+                        required
+                        <?php echo listing_form_checked("condition", "Like New", "Like New"); ?>
                     >
                     <label for="new">
                         Like New
@@ -1132,6 +1176,7 @@ textarea{height:125px;resize:vertical}
                         name="condition"
                         id="good"
                         value="Good"
+                        <?php echo listing_form_checked("condition", "Good", "Like New"); ?>
                     >
                     <label for="good">
                         Good
@@ -1144,6 +1189,7 @@ textarea{height:125px;resize:vertical}
                         name="condition"
                         id="used"
                         value="Used"
+                        <?php echo listing_form_checked("condition", "Used", "Like New"); ?>
                     >
                     <label for="used">
                         Used
@@ -1172,7 +1218,8 @@ textarea{height:125px;resize:vertical}
                         name="sellType"
                         id="sell"
                         value="Sell"
-                        checked
+                        required
+                        <?php echo listing_form_checked("sellType", "Sell", "Sell"); ?>
                         onchange="togglePrice()"
                     >
 
@@ -1189,6 +1236,7 @@ textarea{height:125px;resize:vertical}
                         name="sellType"
                         id="exchange"
                         value="Exchange"
+                        <?php echo listing_form_checked("sellType", "Exchange", "Sell"); ?>
                         onchange="togglePrice()"
                     >
 
@@ -1205,6 +1253,7 @@ textarea{height:125px;resize:vertical}
                         name="sellType"
                         id="donate"
                         value="Donate"
+                        <?php echo listing_form_checked("sellType", "Donate", "Sell"); ?>
                         onchange="togglePrice()"
                     >
 
@@ -1233,6 +1282,7 @@ textarea{height:125px;resize:vertical}
                 placeholder="e.g. 250"
                 min="0"
                 oninput="updatePreview()"
+                value="<?php echo listing_form_value("price"); ?>"
             >
 
         </div>
@@ -1251,6 +1301,7 @@ textarea{height:125px;resize:vertical}
                 id="originalPrice" name="original_price"
                 placeholder="e.g. 500"
                 min="0"
+                value="<?php echo listing_form_value("original_price"); ?>"
             >
 
         </div>
@@ -1269,7 +1320,8 @@ textarea{height:125px;resize:vertical}
                 id="quantity" name="quantity"
                 placeholder="e.g. 2"
                 min="1"
-                value="1"
+                required
+                value="<?php echo listing_form_value("quantity", "1"); ?>"
             >
 
         </div>
@@ -1285,9 +1337,10 @@ textarea{height:125px;resize:vertical}
 
             <input
                 type="text"
-                id="location" name="location"
+                id="location" name="location" required
                 placeholder="e.g. DY Patil Akurdi"
                 oninput="updatePreview()"
+                value="<?php echo listing_form_value("location"); ?>"
             >
 
         </div>
@@ -1305,7 +1358,8 @@ textarea{height:125px;resize:vertical}
                 id="description" name="description"
                 placeholder="Tell students about the material, usage, condition, compatibility, reason for selling..."
                 oninput="updatePreview()"
-            ></textarea>
+                required
+            ><?php echo listing_form_value("description"); ?></textarea>
 
         </div>
 
@@ -1320,9 +1374,9 @@ textarea{height:125px;resize:vertical}
 
             <select id="contactPreference" name="contact_preference">
 
-                <option>ProjectWaste Messages</option>
-                <option>WhatsApp</option>
-                <option>Phone Call</option>
+                <option <?php echo listing_form_selected("contact_preference", "ProjectWaste Messages", "ProjectWaste Messages"); ?>>ProjectWaste Messages</option>
+                <option <?php echo listing_form_selected("contact_preference", "WhatsApp", "ProjectWaste Messages"); ?>>WhatsApp</option>
+                <option <?php echo listing_form_selected("contact_preference", "Phone Call", "ProjectWaste Messages"); ?>>Phone Call</option>
 
             </select>
 
@@ -1339,9 +1393,9 @@ textarea{height:125px;resize:vertical}
 
             <select id="handoverMethod" name="handover_method">
 
-                <option>Meet at College</option>
-                <option>Pickup from Location</option>
-                <option>Courier</option>
+                <option <?php echo listing_form_selected("handover_method", "Meet at College", "Meet at College"); ?>>Meet at College</option>
+                <option <?php echo listing_form_selected("handover_method", "Pickup from Location", "Meet at College"); ?>>Pickup from Location</option>
+                <option <?php echo listing_form_selected("handover_method", "Courier", "Meet at College"); ?>>Courier</option>
 
             </select>
 
@@ -1529,6 +1583,15 @@ const cardPreviewImage = document.getElementById("cardPreviewImage");
 const previewEmoji = document.getElementById("previewEmoji");
 
 let selectedImageFile = null;
+let imageVerified = false;
+let imageCheckRequestId = 0;
+
+function setImageCheckStatus(message, state) {
+    const status = document.getElementById("imageCheckStatus");
+    if (!status) return;
+    status.textContent = message;
+    status.className = "image-check-status " + (state || "");
+}
 
 function validateImage(file) {
     if (!file) return false;
@@ -1549,9 +1612,21 @@ function validateImage(file) {
 }
 
 function showImage(file) {
-    if (!validateImage(file)) return;
+    if (!validateImage(file)) {
+        imageInput.value = "";
+        selectedImageFile = null;
+        imageVerified = false;
+        document.getElementById("imageVerificationToken").value = "";
+        return;
+    }
 
     selectedImageFile = file;
+    imageVerified = false;
+    document.getElementById("imageVerificationToken").value = "";
+    const requestId = ++imageCheckRequestId;
+    const publishButton = document.getElementById("publishButton");
+    if (publishButton) publishButton.disabled = true;
+    setImageCheckStatus("Checking this photo…", "checking");
 
     const reader = new FileReader();
 
@@ -1571,6 +1646,44 @@ function showImage(file) {
     };
 
     reader.readAsDataURL(file);
+
+    const formData = new FormData();
+    formData.append("image", file);
+    formData.append("csrf_token", document.getElementById("imageCheckCsrf").value);
+
+    fetch("classify-image.php", {
+        method: "POST",
+        body: formData,
+        credentials: "same-origin"
+    })
+    .then(async function(response) {
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.message || "Image check failed.");
+        return result;
+    })
+    .then(function(result) {
+        if (requestId !== imageCheckRequestId) return;
+
+        if (result.accepted && result.token) {
+            imageVerified = true;
+            document.getElementById("imageVerificationToken").value = result.token;
+            setImageCheckStatus("Image looks good. You can publish your listing.", "success");
+            if (publishButton) publishButton.disabled = false;
+            return;
+        }
+
+        imageVerified = false;
+        if (publishButton) publishButton.disabled = false;
+        setImageCheckStatus(result.message || "This image doesn't look like a hardware component or project material. Please upload a clear photo of the item.", "error");
+        clearImagePreview();
+    })
+    .catch(function(error) {
+        if (requestId !== imageCheckRequestId) return;
+        imageVerified = false;
+        if (publishButton) publishButton.disabled = false;
+        setImageCheckStatus(error.message === "Failed to fetch" ? "Couldn't reach image checking. Check your connection and try again." : (error.message || "Image checking is temporarily unavailable. Please try again."), "error");
+        clearImagePreview();
+    });
 }
 
 if (imageInput) {
@@ -1582,6 +1695,18 @@ if (imageInput) {
 function removeImage(event) {
     if (event) event.stopPropagation();
 
+    imageCheckRequestId++;
+    imageVerified = false;
+    selectedImageFile = null;
+    document.getElementById("imageVerificationToken").value = "";
+    setImageCheckStatus("", "");
+    const publishButton = document.getElementById("publishButton");
+    if (publishButton) publishButton.disabled = false;
+
+    clearImagePreview();
+}
+
+function clearImagePreview() {
     selectedImageFile = null;
 
     if (imageInput) imageInput.value = "";
@@ -1682,13 +1807,16 @@ function togglePrice() {
     if (type === "Donate") {
         price.value = "";
         price.disabled = true;
+        price.required = false;
         price.placeholder = "No price for donation";
     } else if (type === "Exchange") {
         price.value = "";
         price.disabled = true;
+        price.required = false;
         price.placeholder = "Not applicable";
     } else {
         price.disabled = false;
+        price.required = true;
         price.placeholder = "e.g. 250";
     }
 
@@ -1702,8 +1830,14 @@ window.togglePrice = togglePrice;
 const listingForm = document.getElementById("listingForm");
 
 if (listingForm) {
-    listingForm.addEventListener("submit", function() {
+    listingForm.addEventListener("submit", function(event) {
         const button = document.getElementById("publishButton");
+
+        if (!imageVerified || !document.getElementById("imageVerificationToken").value) {
+            event.preventDefault();
+            setImageCheckStatus("Please upload a hardware photo and wait for the image check to pass before publishing.", "error");
+            return;
+        }
 
         if (button) {
             button.disabled = true;
